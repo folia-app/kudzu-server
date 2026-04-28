@@ -14,6 +14,7 @@
 
 # netlify
 .netlify
+deno.lock
 
 # misc
 .DS_Store

@@ -1,4 +1,4 @@
-const { Image, createCanvas } = require("canvas");
+const { createCanvas, loadImage } = require("@napi-rs/canvas");
 const fs = require("fs");
 const Eth = require("web3-eth");
 const { Kudzu } = require("kuzu-contracts");
@@ -290,18 +290,18 @@ function makeSmallLeaf(i, j, color, tokenId, off) {
   switch (side) {
     case 1:
       rotate = 0;
-      ctx.arc(x - radius, y, radius * 2, rotate, rotate + 0.4 * Math.PI, 0);
-      ctx.arc(x - radius * 2, y, radius * 2, rotate, rotate, 0);
+      ctx.arc(x - radius, y, radius * 2, rotate, rotate + 0.4 * Math.PI, false);
+      ctx.arc(x - radius * 2, y, radius * 2, rotate, rotate, false);
       break;
     case 2:
       rotate = Math.PI;
-      ctx.arc(x + radius, y, radius * 2, rotate, rotate + 0.4 * Math.PI, 0);
-      ctx.arc(x + radius * 2, y, radius * 2, rotate, rotate, 0);
+      ctx.arc(x + radius, y, radius * 2, rotate, rotate + 0.4 * Math.PI, false);
+      ctx.arc(x + radius * 2, y, radius * 2, rotate, rotate, false);
       break;
     case 3:
       rotate = -Math.PI / 2;
-      ctx.arc(x, y + radius, radius * 2, rotate, rotate + 0.4 * Math.PI, 0);
-      ctx.arc(x, y + radius * 2, radius * 2, rotate, rotate, 0);
+      ctx.arc(x, y + radius, radius * 2, rotate, rotate + 0.4 * Math.PI, false);
+      ctx.arc(x, y + radius * 2, radius * 2, rotate, rotate, false);
       break;
     case 4:
       rotate = -Math.PI;
@@ -311,213 +311,137 @@ function makeSmallLeaf(i, j, color, tokenId, off) {
         radius * 2,
         rotate,
         rotate + 0.4 * Math.PI,
-        0
+        false
       );
-      ctx.arc(x + radius * 2, y - radius * 0.1, radius * 2, rotate, rotate, 0);
+      ctx.arc(x + radius * 2, y - radius * 0.1, radius * 2, rotate, rotate, false);
       break;
   }
 
-  // circle
   var startAngle = 0;
   var endAngle = 2 * Math.PI;
-  var counterclockwise = 0;
+  var counterclockwise = false;
   ctx.arc(x, y, radius, startAngle, endAngle, counterclockwise);
   ctx.fill();
 }
 
 async function addEyesAndMouth(tokenId) {
   tokenId = BigInt(tokenId);
-  var mouth = tokenId & 31n;
-  var eyes = (tokenId >> 8n) & 31n;
+  const mouth = tokenId & 31n;
+  const eyes = (tokenId >> 8n) & 31n;
 
-  // for testing colors against tear and barf colors
-  // mouth = 1
-  // eyes = 15
+  const drawingSize = size / 1.6;
+  const drawingPos = (size - drawingSize) / 2;
 
-  var drawingSize = size / 1.6;
-  var drawingPos = (size - drawingSize) / 2;
+  const eyesSrc = loadFromUrl
+    ? `${process.env.IMG_URL}/eyes/${eyes}.png`
+    : fs.readFileSync(require.resolve(`./eyes/${eyes}.png`));
+  const mouthSrc = loadFromUrl
+    ? `${process.env.IMG_URL}/mouth/${mouth}.png`
+    : fs.readFileSync(require.resolve(`./mouth/${mouth}.png`));
 
-  return new Promise((resolve) => {
-    var done = false;
+  const [eyesImg, mouthImg] = await Promise.all([
+    loadImage(eyesSrc),
+    loadImage(mouthSrc),
+  ]);
 
-    var drawing = new Image();
-    if (!loadFromUrl) {
-      var filename = `./eyes/${eyes}.png`;
-      const data = fs.readFileSync(require.resolve(filename));
-      // // convert image file to base64-encoded string
-      const base64Image = Buffer.from(data, "binary").toString("base64");
-      // // combine all strings
-      const base64ImageStr = `data:image/${eyes};base64,${base64Image}`;
-      src = base64ImageStr;
-    } else {
-      src = `${process.env.IMG_URL}/eyes/${eyes}.png`;
+  ctx.drawImage(eyesImg, drawingPos, drawingPos, drawingSize, drawingSize);
+  ctx.drawImage(mouthImg, drawingPos, drawingPos, drawingSize, drawingSize);
+}
+async function replaceBlack(dataURL, value = 40) {
+  const cnv = createCanvas(size, size);
+  const ctx = cnv.getContext("2d");
+  const img = await loadImage(dataURL);
+  ctx.drawImage(img, 0, 0);
+  const oldR = 127;
+  const oldG = 127;
+  const oldB = 127;
+
+  const newR = value;
+  const newG = value;
+  const newB = value;
+
+  var imageData = ctx.getImageData(0, 0, size, size);
+
+  for (var i = 0; i < imageData.data.length; i += 4) {
+    const redDiff = imageData.data[i] - oldR;
+    const greenDiff = imageData.data[i + 1] - oldG;
+    const blueDiff = imageData.data[i + 2] - oldB;
+    const diffMax = 70;
+    if (
+      Math.abs(redDiff) < diffMax &&
+      Math.abs(greenDiff) < diffMax &&
+      Math.abs(blueDiff) < diffMax
+    ) {
+      imageData.data[i] = newR;
+      imageData.data[i + 1] = newG;
+      imageData.data[i + 2] = newB;
     }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return cnv.toDataURL("image/jpeg");
+}
 
-    drawing.onload = function () {
-      ctx.drawImage(drawing, drawingPos, drawingPos, drawingSize, drawingSize);
-      if (done) {
-        resolve();
-      } else {
-        done = true;
+async function replaceColors(dataURL, replacements) {
+  const cnv = createCanvas(size, size);
+  const ctx = cnv.getContext("2d");
+  const img = await loadImage(dataURL);
+  ctx.drawImage(img, 0, 0);
+
+  var imageData = ctx.getImageData(0, 0, size, size);
+
+  for (var i = 0; i < imageData.data.length; i += 4) {
+    for (let j = 0; j < replacements.length; j++) {
+      const oldR = replacements[j].old.r;
+      const oldG = replacements[j].old.g;
+      const oldB = replacements[j].old.b;
+
+      const newR = replacements[j].new.r;
+      const newG = replacements[j].new.g;
+      const newB = replacements[j].new.b;
+
+      const redDiff = imageData.data[i] - oldR;
+      const greenDiff = imageData.data[i + 1] - oldG;
+      const blueDiff = imageData.data[i + 2] - oldB;
+      const diffMax = 70;
+      if (
+        Math.abs(redDiff) < diffMax &&
+        Math.abs(greenDiff) < diffMax &&
+        Math.abs(blueDiff) < diffMax
+      ) {
+        imageData.data[i] = newR;
+        imageData.data[i + 1] = newG;
+        imageData.data[i + 2] = newB;
       }
-    };
-    drawing.src = src;
-
-    var drawing2 = new Image();
-    if (!loadFromUrl) {
-      var filename = `./mouth/${mouth}.png`;
-      const data = fs.readFileSync(require.resolve(filename));
-      // // convert image file to base64-encoded string
-      const base64Image = Buffer.from(data, "binary").toString("base64");
-      // // combine all strings
-      const base64ImageStr = `data:image/${eyes};base64,${base64Image}`;
-      src2 = base64ImageStr;
-    } else {
-      src2 = `${process.env.IMG_URL}/mouth/${mouth}.png`;
     }
-
-    drawing2.onload = function () {
-      ctx.drawImage(drawing2, drawingPos, drawingPos, drawingSize, drawingSize);
-      if (done) {
-        resolve();
-      } else {
-        done = true;
-      }
-    };
-    drawing2.src = src2;
-  });
-}
-function replaceBlack(dataURL, value = 40) {
-  return new Promise((resolve) => {
-    const cnv = createCanvas(size, size);
-    const ctx = cnv.getContext("2d");
-    cnv.width = size;
-    cnv.height = size;
-    const img = new Image();
-    img.onload = function () {
-      ctx.drawImage(img, 0, 0);
-      const oldR = 127;
-      const oldG = 127;
-      const oldB = 127;
-
-      const newR = value;
-      const newG = value;
-      const newB = value;
-
-      var imageData = ctx.getImageData(0, 0, size, size);
-
-      // change any old rgb to the new-rgb
-      for (var i = 0; i < imageData.data.length; i += 4) {
-        // console.log(imageData.data[i], imageData.data[i + 1], imageData.data[i + 2])
-        // is this pixel the old rgb?
-        const redDiff = imageData.data[i] - oldR;
-        const greenDiff = imageData.data[i + 1] - oldG;
-        const blueDiff = imageData.data[i + 2] - oldB;
-        const diffMax = 70;
-        if (
-          Math.abs(redDiff) < diffMax &&
-          Math.abs(greenDiff) < diffMax &&
-          Math.abs(blueDiff) < diffMax
-        ) {
-          // change to your new rgb
-          imageData.data[i] = newR; //+ redDiff;
-          imageData.data[i + 1] = newG; //+ greenDiff;
-          imageData.data[i + 2] = newB; //+ blueDiff;
-        }
-      }
-      // put the altered data back on the canvas
-      ctx.putImageData(imageData, 0, 0);
-      resolve(cnv.toDataURL("image/jpeg"));
-    };
-    img.src = dataURL;
-  });
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return cnv.toDataURL("image/jpeg");
 }
 
-function replaceColors(dataURL, replacements) {
-  // return dataURL
-  return new Promise((resolve) => {
-    const cnv = createCanvas(size, size);
-    const ctx = cnv.getContext("2d");
-    cnv.width = size;
-    cnv.height = size;
-    const img = new Image();
-    img.onload = function () {
-      ctx.drawImage(img, 0, 0);
+async function replaceWhite(dataURL) {
+  const cnv = createCanvas(size, size);
+  const ctx = cnv.getContext("2d");
+  const img = await loadImage(dataURL);
+  ctx.drawImage(img, 0, 0);
+  const oldRed = 228;
+  const oldGreen = 228;
+  const oldBlue = 228;
 
-      var imageData = ctx.getImageData(0, 0, size, size);
+  var imageData = ctx.getImageData(0, 0, size, size);
 
-      // change any old rgb to the new-rgb
-      for (var i = 0; i < imageData.data.length; i += 4) {
-        // console.log(imageData.data[i], imageData.data[i + 1], imageData.data[i + 2])
-        // is this pixel the old rgb?
-        for (let j = 0; j < replacements.length; j++) {
-          const oldR = replacements[j].old.r;
-          const oldG = replacements[j].old.g;
-          const oldB = replacements[j].old.b;
-
-          const newR = replacements[j].new.r;
-          const newG = replacements[j].new.g;
-          const newB = replacements[j].new.b;
-
-          const redDiff = imageData.data[i] - oldR;
-          const greenDiff = imageData.data[i + 1] - oldG;
-          const blueDiff = imageData.data[i + 2] - oldB;
-          const diffMax = 70;
-          if (
-            Math.abs(redDiff) < diffMax &&
-            Math.abs(greenDiff) < diffMax &&
-            Math.abs(blueDiff) < diffMax
-          ) {
-            // change to your new rgb
-            imageData.data[i] = newR; //+ redDiff;
-            imageData.data[i + 1] = newG; //+ greenDiff;
-            imageData.data[i + 2] = newB; //+ blueDiff;
-          }
-        }
-      }
-      // put the altered data back on the canvas
-      ctx.putImageData(imageData, 0, 0);
-      resolve(cnv.toDataURL("image/jpeg"));
-    };
-    img.src = dataURL;
-  });
-}
-
-function replaceWhite(dataURL) {
-  return new Promise((resolve) => {
-    const cnv = createCanvas(size, size);
-    const ctx = cnv.getContext("2d");
-    cnv.width = size;
-    cnv.height = size;
-    const img = new Image();
-    img.onload = function () {
-      ctx.drawImage(img, 0, 0);
-      const oldRed = 228;
-      const oldGreen = 228;
-      const oldBlue = 228;
-
-      var imageData = ctx.getImageData(0, 0, size, size);
-
-      // change any old rgb to the new-rgb
-      for (var i = 0; i < imageData.data.length; i += 4) {
-        // is this pixel the old rgb?
-        if (
-          imageData.data[i] == oldRed &&
-          imageData.data[i + 1] == oldGreen &&
-          imageData.data[i + 2] == oldBlue
-        ) {
-          // change to your new rgb
-          imageData.data[i] = 255;
-          imageData.data[i + 1] = 255;
-          imageData.data[i + 2] = 255;
-        }
-      }
-      // put the altered data back on the canvas
-      ctx.putImageData(imageData, 0, 0);
-      resolve(cnv.toDataURL("image/jpeg"));
-    };
-    img.src = dataURL;
-  });
+  for (var i = 0; i < imageData.data.length; i += 4) {
+    if (
+      imageData.data[i] == oldRed &&
+      imageData.data[i + 1] == oldGreen &&
+      imageData.data[i + 2] == oldBlue
+    ) {
+      imageData.data[i] = 255;
+      imageData.data[i + 1] = 255;
+      imageData.data[i + 2] = 255;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return cnv.toDataURL("image/jpeg");
 }
 
 async function getTokenByIndex(tokenId, networkId = 1) {

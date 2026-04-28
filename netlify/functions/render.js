@@ -1,4 +1,4 @@
-const { Image, createCanvas } = require('canvas')
+const { createCanvas } = require('@napi-rs/canvas')
 // require('dotenv').config()
 var size = 2048
 var gridSize = 32
@@ -69,7 +69,7 @@ exports.handler = async function (event, context) {
     // circle
     var startAngle = 0
     var endAngle = 2 * Math.PI
-    var counterclockwise = 0
+    var counterclockwise = false
     ctx.arc(x, y, radius, startAngle, endAngle, counterclockwise);
     ctx.fill();
   }
