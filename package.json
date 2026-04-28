@@ -1,0 +1,23 @@
+{
+  "name": "kudzu",
+  "version": "1.0.0",
+  "main": "index.js",
+  "repository": "https://github.com/folia-app/kudzu",
+  "author": "okwme",
+  "license": "CC-NC-4.0",
+  "engines": {
+    "node": "16.19.1"
+  },
+  "scripts": {
+    "start": "NODE_ENV=local netlify dev"
+  },
+  "dependencies": {
+    "canvas": "^2.11.0",
+    "dotenv": "^16.4.5",
+    "kuzu-contracts": "git+https://git@github.com/folia-app/kudzu.git#966f94b64af4d6c0badecf62203debec18414865",
+    "kudzu-cup": "git+https://git@github.com/trifle-labs/kudzu-cup.git#e58e854ca21ca1b33a0a62a3f30f1cb2251bbc71",
+    "node-fetch": "^2.7.0",
+    "web3-eth": "^1.3.5"
+  },
+  "devDependencies": {}
+}
