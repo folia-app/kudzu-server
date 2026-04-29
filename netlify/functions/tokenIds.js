@@ -41,6 +41,7 @@ exports.handler = async function (event, context) {
     statusCode: 200,
     headers: {
       'access-control-allow-origin': '*',
+      'cache-control': 'public, s-maxage=300, stale-while-revalidate=86400',
     },
     body: JSON.stringify({ tokens: tokenIds }),
   };
@@ -106,14 +107,10 @@ async function getTokenIds(networkId) {
     //   });
     // }
 
-    const isBase = networkId == '8453' || networkId == '84532';
-    const imgBase = `${process.env.VUE_APP_CANONICAL_DOMAIN}/img/${isBase ? 'base/' : ''}`;
     const tokenIds = events.map((event) => {
-      const tokenId = event.returnValues.tokenId;
       return {
-        tokenId,
+        tokenId: event.returnValues.tokenId,
         owner: event.returnValues.to,
-        image: `${imgBase}${tokenId}`,
       };
     });
 
