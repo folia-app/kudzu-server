@@ -16,8 +16,9 @@
 
 [[redirects]]
   from = "/img/*"
-  to = "/.netlify/functions/img/:splat"
+  to = "https://folia-kudzu-img.fly.dev/img/:splat"
   status = 200
+  force = true
   
 
   ## Uncomment to use this redirect for Single Page Applications like create-react-app.

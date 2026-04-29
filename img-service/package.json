@@ -1,0 +1,18 @@
+{
+  "name": "kudzu-img-service",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "engines": {
+    "node": ">=18 <19"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "canvas": "2.11.2",
+    "dotenv": "^16.4.5",
+    "kuzu-contracts": "git+https://git@github.com/folia-app/kudzu.git#966f94b64af4d6c0badecf62203debec18414865",
+    "web3-eth": "^1.3.5"
+  }
+}
