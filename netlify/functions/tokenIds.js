@@ -106,11 +106,14 @@ async function getTokenIds(networkId) {
     //   });
     // }
 
+    const isBase = networkId == '8453' || networkId == '84532';
+    const imgBase = `${process.env.VUE_APP_CANONICAL_DOMAIN}/img/${isBase ? 'base/' : ''}`;
     const tokenIds = events.map((event) => {
       const tokenId = event.returnValues.tokenId;
       return {
         tokenId,
         owner: event.returnValues.to,
+        image: `${imgBase}${tokenId}`,
       };
     });
 
