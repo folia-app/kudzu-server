@@ -32,6 +32,9 @@ const networks = {
         { old: { r: 128, g: 92, b: 254 }, new: { r: 0, g: 82, b: 255 } },
         { old: { r: 2, g: 168, b: 254 }, new: { r: 31, g: 137, b: 187 } },
         { old: { r: 29, g: 0, b: 219 }, new: { r: 5, g: 69, b: 113 } },
+        // skia jpeg fry shifts these cluster centers — map to same targets
+        { old: { r: 186, g: 18, b: 254 }, new: { r: 0, g: 82, b: 255 } },
+        { old: { r: 109, g: 8, b: 234 }, new: { r: 5, g: 69, b: 113 } },
       ],
       replaceBlackValue: 40,
     },
