@@ -37,13 +37,14 @@ let kudzuContract;
 exports.handler = async function (event, context) {
   const networkId = event.queryStringParameters.network ?? '1'; // ?network=4
   const tokenIds = await getTokenIds(networkId);
+  const contract = Kudzu.networks[networkId]?.address || null;
   return {
     statusCode: 200,
     headers: {
       'access-control-allow-origin': '*',
       'cache-control': 'public, s-maxage=300, stale-while-revalidate=86400',
     },
-    body: JSON.stringify({ tokens: tokenIds }),
+    body: JSON.stringify({ contract, chainId: parseInt(networkId, 10), tokens: tokenIds }),
   };
 };
 
