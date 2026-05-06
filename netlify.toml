@@ -1,4 +1,4 @@
-# example netlify.toml
+# Branch deploy preserved for legacy frontend URL refs (celestia--folia-virus.netlify.app).
 [build]
   command = "# no build command"
   functions = "netlify/functions"
