@@ -31,6 +31,14 @@ const TOKENS = fs
   .split(',')
   .filter(Boolean);
 
+/**
+ * Every chain has its own palette, and they do not exercise the same code.
+ * mainnet is the plain green path; base adds replaceColors and replaceBlack;
+ * forma additionally fries at 0.02 instead of 0.01. The later two are the more
+ * sensitive paths because each replacement is another JPEG decode/re-encode.
+ */
+const NETWORKS = ['mainnet', 'base', 'forma'];
+
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 
 /**
@@ -53,11 +61,9 @@ function defaultJpegQuality() {
   return 'unknown';
 }
 
-async function render(tokenId) {
-  const res = await handler(
-    { path: `/img/${tokenId}`, queryStringParameters: {} },
-    {}
-  );
+async function render(network, tokenId) {
+  const p = network === 'mainnet' ? `/img/${tokenId}` : `/img/${network}/${tokenId}`;
+  const res = await handler({ path: p, queryStringParameters: {} }, {});
   if (res.statusCode !== 200) throw new Error(`HTTP ${res.statusCode}`);
   return Buffer.from(res.body, 'base64');
 }
@@ -70,12 +76,15 @@ async function render(tokenId) {
   };
 
   const hashes = {};
-  for (const id of TOKENS) {
-    try {
-      const buf = await render(id);
-      hashes[id] = { sha: sha(buf), bytes: buf.length };
-    } catch (e) {
-      hashes[id] = { error: e.message };
+  for (const net of NETWORKS) {
+    for (const id of TOKENS) {
+      const key = `${net}/${id}`;
+      try {
+        const buf = await render(net, id);
+        hashes[key] = { sha: sha(buf), bytes: buf.length };
+      } catch (e) {
+        hashes[key] = { error: e.message };
+      }
     }
   }
 
@@ -84,7 +93,7 @@ async function render(tokenId) {
       GOLDEN,
       JSON.stringify({ recordedWith: env, tokens: hashes }, null, 2) + '\n'
     );
-    console.log(`recorded ${TOKENS.length} tokens with canvas ${env.canvas} on ${env.node}`);
+    console.log(`recorded ${TOKENS.length} tokens x ${NETWORKS.length} networks (${Object.keys(hashes).length} images) with canvas ${env.canvas} on ${env.node}`);
     console.log(`default jpeg quality: ${env.defaultJpegQuality}`);
     return;
   }
@@ -100,20 +109,28 @@ async function render(tokenId) {
 
   let same = 0;
   const diffs = [];
-  for (const id of TOKENS) {
-    const g = golden.tokens[id];
-    const c = hashes[id];
-    if (!g) continue;
-    if (c.error) { diffs.push(`${id}: ${c.error}`); continue; }
-    if (g.sha === c.sha) same++;
-    else diffs.push(`${id}: golden ${g.sha.slice(0, 12)} (${g.bytes}B) vs ${c.sha.slice(0, 12)} (${c.bytes}B)`);
+  const perNetwork = {};
+  for (const key of Object.keys(golden.tokens)) {
+    const net = key.split('/')[0];
+    perNetwork[net] = perNetwork[net] || { same: 0, total: 0 };
+    perNetwork[net].total++;
+    const g = golden.tokens[key];
+    const c = hashes[key];
+    if (!c || c.error) { diffs.push(`${key}: ${c ? c.error : 'missing'}`); continue; }
+    if (g.sha === c.sha) { same++; perNetwork[net].same++; }
+    else diffs.push(`${key}: golden ${g.sha.slice(0, 12)} (${g.bytes}B) vs ${c.sha.slice(0, 12)} (${c.bytes}B)`);
   }
 
   if (env.defaultJpegQuality !== golden.recordedWith.defaultJpegQuality) {
     console.log(`\n  WARNING: canvas's default JPEG quality changed — every re-encode in img.js is affected`);
   }
 
-  console.log(`\n  ${same}/${TOKENS.length} identical`);
+  const total = Object.keys(golden.tokens).length;
+  console.log('');
+  for (const [net, r] of Object.entries(perNetwork)) {
+    console.log(`  ${net.padEnd(8)} ${r.same}/${r.total} identical`);
+  }
+  console.log(`  ${same}/${total} identical overall`);
   if (diffs.length) {
     console.log(`  ${diffs.length} differ:`);
     diffs.slice(0, 10).forEach((d) => console.log(`    ${d}`));
