@@ -1,0 +1,24 @@
+name = "folia-cf-virus"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "../public"
+binding = "ASSETS"
+html_handling = "none"
+not_found_handling = "none"
+
+[alias]
+dotenv = "./src/shims/dotenv.js"
+
+[vars]
+# Copied from the Netlify site config. CANONICAL_DOMAIN is the base of the
+# image urls this endpoint publishes, so it has to match exactly.
+#
+# OPENSEA_API_KEY is deliberately absent: the function reads it for a Base
+# owner lookup, but it is not set on the Netlify site either, so that path is
+# already inert. Setting one here would be a behaviour change, not parity --
+# and it is a secret, which does not belong in this file in any case.
+VUE_APP_CANONICAL_DOMAIN = "https://virus.folia.app"
+VUE_APP_DEV_IGNORE_IS_OWNED = "true"
