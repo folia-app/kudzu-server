@@ -11,7 +11,8 @@ const ignoreIsOwned = process.env.VUE_APP_DEV_IGNORE_IS_OWNED === "true";
 const networks = {
   mainnet: {
     id: 1,
-    infura: `wss://mainnet.infura.io/ws/v3/${process.env.INFURA_API_KEY}`,
+    // Endpoints live in rpcsFor() now, keyless and plural. This used to be a
+    // single wss://mainnet.infura.io url built from INFURA_API_KEY.
   },
   base: {
     id: 8453,
@@ -447,15 +448,57 @@ async function replaceWhite(dataURL) {
   return cnv.toDataURL("image/jpeg");
 }
 
+// Mainnet used to be a single keyed Infura websocket url built from
+// INFURA_API_KEY. These are one-shot contract reads, so a websocket keeps a
+// socket open for no reason, and one keyed provider is a single point of
+// failure on the path that decides whether a token gets an image at all.
+// Keyless, http, and more than one -- tried in order.
+const rpcsFor = (networkId) =>
+  ({
+    1: [
+      "https://gateway.tenderly.co/public/mainnet",
+      "https://mainnet.gateway.tenderly.co",
+      "https://eth.drpc.org",
+      "https://rpc.mevblocker.io",
+      "https://ethereum-rpc.publicnode.com",
+      "https://eth-mainnet.public.blastapi.io",
+    ],
+    8453: ["https://mainnet.base.org/", "https://base-rpc.publicnode.com"],
+  }[networkId] ?? []);
+
+// `networks` is an object keyed by name, so networks.find(...) was calling an
+// array method on it and threw "networks.find is not a function" every time.
+// It went unnoticed because both callers are behind flags: the owner check is
+// skipped while VUE_APP_DEV_IGNORE_IS_OWNED is set, and byIndex is opt-in --
+// which is why ?byIndex=1 returns 500 today, and why turning the owner check
+// back on would have 404'd every token as "Not yet minted".
+async function withEth(networkId, fn) {
+  const urls = rpcsFor(Number(networkId));
+  if (!urls.length) {
+    const net = Object.values(networks).find((n) => n.id === Number(networkId));
+    if (!net || !net.infura) throw new Error(`no rpc for network ${networkId}`);
+    return fn(new Eth(net.infura));
+  }
+  let last;
+  for (const url of urls) {
+    try {
+      return await fn(new Eth(url));
+    } catch (e) {
+      last = e;
+    }
+  }
+  throw last;
+}
+
 async function getTokenByIndex(tokenId, networkId = 1) {
   // setup contract
-  const eth = new Eth(networks.find((n) => n.id === networkId).infura);
-  kudzuContract = new eth.Contract(
-    Kudzu.abi,
-    Kudzu.networks[networkId].address
-  );
-
-  const tokenByIndex = await kudzuContract.methods.tokenByIndex(tokenId).call();
+  const tokenByIndex = await withEth(networkId, async (eth) => {
+    kudzuContract = new eth.Contract(
+      Kudzu.abi,
+      Kudzu.networks[networkId].address
+    );
+    return kudzuContract.methods.tokenByIndex(tokenId).call();
+  });
   return tokenByIndex.toString(10);
 }
 
@@ -464,16 +507,15 @@ async function getNFTOwnerByTokenId(tokenId, networkId = 1) {
   let owner;
   try {
     // setup contract
-    const eth = new Eth(networks.find((n) => n.id === networkId).infura);
-    kudzuContract = new eth.Contract(
-      Kudzu.abi,
-      Kudzu.networks[networkId].address
-    );
-
-    const totalSupply = await kudzuContract.methods.totalSupply().call();
-    console.log({ totalSupply });
-
-    owner = await kudzuContract.methods.ownerOf(tokenId).call();
+    owner = await withEth(networkId, async (eth) => {
+      kudzuContract = new eth.Contract(
+        Kudzu.abi,
+        Kudzu.networks[networkId].address
+      );
+      const totalSupply = await kudzuContract.methods.totalSupply().call();
+      console.log({ totalSupply });
+      return kudzuContract.methods.ownerOf(tokenId).call();
+    });
   } catch (e) {
     // will throw error if no owner...
     console.error(e);
