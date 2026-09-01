@@ -3,12 +3,39 @@ const Eth = require("web3-eth");
 const { Kudzu } = require("kuzu-contracts");
 const { eyes, mouths } = require("kudzu-cup");
 const fetch = require("node-fetch");
-const infura = {
-  1: `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
-  4: `https://rinkeby.infura.io/v3/${process.env.INFURA_API_KEY}`,
-  8453: "https://mainnet.base.org/",
-  84532: "https://sepolia.base.org/",
+// Keyless, and more than one per chain. Mainnet used to be a single keyed
+// Infura url; that is both a credential to leak and a single point of failure,
+// and the same provider's limits had already broken metadata elsewhere in this
+// codebase quietly, behind a try/catch. Order is preference, each entry a
+// fallback for the one before.
+const rpcs = {
+  1: [
+    "https://gateway.tenderly.co/public/mainnet",
+    "https://mainnet.gateway.tenderly.co",
+    "https://eth.drpc.org",
+    "https://rpc.mevblocker.io",
+    "https://ethereum-rpc.publicnode.com",
+    "https://eth-mainnet.public.blastapi.io",
+  ],
+  4: ["https://gateway.tenderly.co/public/mainnet"],
+  8453: ["https://mainnet.base.org/", "https://base-rpc.publicnode.com"],
+  84532: ["https://sepolia.base.org/"],
 };
+
+// Try each endpoint for the chain until one answers. The caller reads a throw
+// as "this token has no owner", so without this an outage is served as a
+// legitimate result rather than as an error.
+async function withEth(networkId, fn) {
+  let last;
+  for (const url of rpcs[networkId] ?? rpcs[1]) {
+    try {
+      return await fn(new Eth(url));
+    } catch (e) {
+      last = e;
+    }
+  }
+  throw last || new Error("no rpc endpoint answered");
+}
 
 const networkNames = {
   1: "homestead",
@@ -140,12 +167,13 @@ async function getNFTOwnerByTokenId(tokenId, networkId = 1) {
   try {
     // setup contract
 
-    const eth = new Eth(infura[networkId]);
-    kudzuContract = new eth.Contract(
-      Kudzu.abi,
-      Kudzu.networks[networkId].address
-    );
-    owner = await kudzuContract.methods.ownerOf(tokenId).call();
+    owner = await withEth(networkId, async (eth) => {
+      kudzuContract = new eth.Contract(
+        Kudzu.abi,
+        Kudzu.networks[networkId].address
+      );
+      return kudzuContract.methods.ownerOf(tokenId).call();
+    });
   } catch (e) {
     // will throw error if no owner...
     console.error(e);
