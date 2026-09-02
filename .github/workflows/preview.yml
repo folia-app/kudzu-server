@@ -1,0 +1,82 @@
+# A deploy preview for every pull request, and a comment saying where it is.
+#
+# This is the half of Netlify that the deploy workflow did not replace. Netlify
+# built every PR to its own url and commented the link; without it a reviewer
+# has to take the diff's word for what the page looks like.
+#
+# `wrangler versions upload` is the equivalent: it uploads the worker as a new
+# version and returns a url unique to that version, WITHOUT moving production
+# traffic. The live custom domain keeps serving whatever was last deployed. That
+# separation is the whole point -- a preview that could affect production would
+# not be a preview.
+#
+# The comment is edited in place rather than appended, so a PR pushed to ten
+# times has one comment showing the current preview, not ten stale ones.
+name: preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths-ignore: ['**.md']
+
+# One preview per PR. A new push supersedes the one in flight rather than
+# racing it -- unlike production deploys, an abandoned preview costs nothing.
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install
+        run: yarn install --frozen-lockfile
+
+      - name: Install wrangler
+        run: npm install -g wrangler@4
+
+      - name: Upload preview version
+        id: preview
+        working-directory: cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          wrangler versions upload \
+            --message "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}" \
+            --tag "pr-${{ github.event.pull_request.number }}" 2>&1 | tee /tmp/out
+          url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' /tmp/out | head -1)
+          [ -n "$url" ] || { echo "no preview url in wrangler output"; exit 1; }
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # Check the preview actually serves before advertising it. A link to a
+      # broken preview wastes the reviewer's time twice: once when it fails,
+      # again when they work out whether it is their change or the pipeline.
+      - name: Check it serves
+        run: |
+          for i in $(seq 1 20); do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' -m 20 "${{ steps.preview.outputs.url }}/") && \
+              { echo "preview serving ($code)"; exit 0; }
+            sleep 6
+          done
+          echo "preview never served" >&2; exit 1
+
+      - uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: cloudflare-preview
+          message: |
+            **Preview:** ${{ steps.preview.outputs.url }}
+
+            Built from `${{ github.event.pull_request.head.sha }}`. This is a
+            Workers *version* — it has its own url and does not touch what
+            `virus.folia.app` is serving. Production only changes when this merges.
