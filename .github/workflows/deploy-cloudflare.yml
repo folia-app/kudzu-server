@@ -1,0 +1,65 @@
+# Build this site and deploy it as a Cloudflare Worker.
+#
+# This is the part Netlify could not do: it builds from an org-owned repo with
+# no plan gating, because the build happens here and only the finished artifact
+# is handed to Cloudflare. Same shape as the Fly deploys -- CI holds a scoped
+# token, the platform never touches the repo.
+#
+# Required repo secret:
+#   CLOUDFLARE_API_TOKEN   a token with the "Edit Cloudflare Workers" template
+#   CLOUDFLARE_ACCOUNT_ID  e0dafa2382193a270bd2a7fd40f0c623
+#
+# Node is pinned. Nothing pinned it before, and an unpinned toolchain is why a
+# rebuild of an untouched commit produces different chunk hashes than the build
+# Netlify made -- same modules, different minifier output. Pinning makes a
+# rebuild reproducible.
+name: deploy-cloudflare
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+concurrency:
+  group: cloudflare-folia-cf-virus
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install
+        # Git dependencies in these repos build themselves in a postinstall
+        # (viper webpacks its bundle, doaw-contracts compiles). Skipping
+        # scripts leaves the package without the entry point its main field
+        # names, and the build fails on a missing module rather than on the
+        # real cause.
+        run: yarn install --frozen-lockfile
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare
+
+      # A green deploy is not a working deploy. Two tokens on this project
+      # served a placeholder for two years behind a 200, so check the body,
+      # not the status.
+      - name: Verify
+        run: |
+          URL=https://folia-cf-virus.trifle-life.workers.dev/
+          for i in $(seq 1 20); do
+            CT=$(curl -fsS -o /dev/null -w '%{content_type}' -m 20 "$URL") || CT=""
+            case "$CT" in text/html*) echo "serving html ($CT)"; exit 0 ;; esac
+            sleep 6
+          done
+          echo "never served html (last content-type: $CT)" >&2
+          exit 1
