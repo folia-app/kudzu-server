@@ -3,6 +3,19 @@ main = "src/index.js"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 
+# workers_dev must be explicit once routes are declared, or the workers.dev
+# preview url is turned off -- which is the url used to check this worker
+# before and after a change.
+workers_dev = true
+
+# The hostnames this worker answers on. custom_domain means Cloudflare owns the
+# DNS record and the certificate. Recorded here so the repo, not a dashboard,
+# says which worker serves which hostname -- and so the binding is recreated if
+# the worker ever is.
+routes = [
+  { pattern = "virus.folia.app", custom_domain = true },
+]
+
 [assets]
 directory = "../public"
 binding = "ASSETS"
