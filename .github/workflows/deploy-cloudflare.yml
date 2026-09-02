@@ -43,12 +43,21 @@ jobs:
         # real cause.
         run: yarn install --frozen-lockfile
 
+      # wrangler is installed globally rather than run through npx. npx resolves
+      # against the nearest package.json, which is this app's -- and several of
+      # these apps have peer dependency conflicts old enough that npm refuses to
+      # resolve them at all (vue 2 vs 3, node-sass 4 vs 6). None of that has
+      # anything to do with deploying a built artifact, so the deploy is kept
+      # out of that tree.
+      - name: Install wrangler
+        run: npm install -g wrangler@4
+
       - name: Deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: cloudflare
+        working-directory: cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler deploy
 
       # A green deploy is not a working deploy. Two tokens on this project
       # served a placeholder for two years behind a 200, so check the body,
