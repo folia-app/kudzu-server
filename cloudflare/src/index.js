@@ -15,7 +15,15 @@
  * too, and a 301 would change what consumers see.
  */
 import metadataFn from '../../netlify/functions/metadata'
+import tokenIdsFn from '../../netlify/functions/tokenIds'
 import { runNetlifyFunction } from './netlify'
+
+// Netlify serves every file in the functions directory at
+// /.netlify/functions/<name>, with no rule in netlify.toml saying so. Only the
+// declared redirects were ported here, so tokenIds had no route -- and
+// www.folia.app calls it cross-origin for the Kudzu work pages, where it read
+// as a CORS failure because a 404 carries no access-control headers.
+const FUNCTIONS = { metadata: metadataFn.handler, tokenIds: tokenIdsFn.handler }
 
 const IMG_ORIGIN = 'https://folia-kudzu-img.fly.dev'
 
@@ -25,6 +33,11 @@ export default {
 
     if (url.pathname.startsWith('/metadata/') || url.pathname.startsWith('/.netlify/functions/metadata/')) {
       return runNetlifyFunction(metadataFn.handler, request, { path: url.pathname })
+    }
+
+    const fn = url.pathname.match(/^\/\.netlify\/functions\/([^/]+)/)
+    if (fn && FUNCTIONS[fn[1]]) {
+      return runNetlifyFunction(FUNCTIONS[fn[1]], request, { path: url.pathname })
     }
 
     if (url.pathname.startsWith('/img/')) {
