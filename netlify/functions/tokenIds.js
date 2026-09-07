@@ -175,6 +175,13 @@ exports.handler = async function (event) {
       if (r.success && r.returnData) tokenIds.push(BigInt('0x' + r.returnData).toString());
     }
 
+    // Refuse to answer with a short list. Returning {tokens:[]} with a 200 is
+    // precisely the failure this function was rewritten to remove -- an empty
+    // grid that looks like a work with no tokens rather than a broken read.
+    if (tokenIds.length !== total) {
+      throw new Error(`enumerated ${tokenIds.length} of ${total} tokens`);
+    }
+
     const ownerRows = await multicall(chainId, contract, SEL.ownerOf, tokenIds);
     const tokens = new Array(tokenIds.length);
     for (let i = 0; i < tokenIds.length; i++) {
