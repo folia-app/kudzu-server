@@ -1,123 +1,207 @@
-// import { Kudzu } from 'kuzu-contracts'
-const { Kudzu } = require('kuzu-contracts');
+/**
+ * The token list for a Kudzu contract, read from the chain.
+ *
+ * This used to query Index Supply for Infect events. That worked on mainnet and
+ * silently returned nothing on Base -- Index Supply has no Base data at all,
+ * answering `{"cursor":"8453-1","columns":[],"rows":[]}` for any query on that
+ * chain, so /works/kudzu-base rendered an empty Tokens tab. It also read an
+ * INDEX_SUPPLY_API_KEY that was never set on the Netlify site, at either site or
+ * account level, so every request went out with `api-key=undefined`.
+ *
+ * Kudzu is ERC721Enumerable on every network it is deployed to, so the same list
+ * can be derived from the contract itself: totalSupply, then tokenByIndex across
+ * the range, then ownerOf for each id. No index, no key, no third party.
+ *
+ * Verified equivalent before switching: enumerating mainnet yields exactly the
+ * 2,184 ids Index Supply returned, and the owners match -- Kudzu tokens are
+ * soulbound, so whoever an infection minted to still holds it.
+ *
+ * Calls are batched through Multicall3, which is deployed at the same address on
+ * both chains. Batching matters: Base has 27,912 tokens, and one eth_call each
+ * would be 55,824 requests. At 4,000 calls per batch it is fifteen, which also
+ * keeps it inside a Worker's subrequest budget. JSON-RPC batching would have
+ * been simpler but is not portable -- base.org caps a batch at 10 calls, drpc
+ * errors on every element, and 1rpc refuses outright.
+ */
+const abi = require('web3-eth-abi');
 const fetch = require('node-fetch');
-// import Eth from 'web3-eth'
+const { Kudzu } = require('kuzu-contracts');
 
 require('dotenv').config();
 
-const ignoreIsOwned = process.env.VUE_APP_DEV_IGNORE_IS_OWNED === 'true';
+const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11';
 
-// Index Supply API configuration
-const INDEX_SUPPLY_API_KEY = process.env.INDEX_SUPPLY_API_KEY;
-const INDEX_SUPPLY_BASE_URL = 'https://api.indexsupply.net/v2/query';
-
-const transferInputs = [
-  {
-    indexed: true,
-    internalType: 'address',
-    name: 'from',
-    type: 'address',
-  },
-  {
-    indexed: true,
-    internalType: 'address',
-    name: 'to',
-    type: 'address',
-  },
-  {
-    indexed: true,
-    internalType: 'uint256',
-    name: 'tokenId',
-    type: 'uint256',
-  },
-];
-
-let kudzuContract;
-
-exports.handler = async function (event, context) {
-  const networkId = event.queryStringParameters.network ?? '1'; // ?network=4
-  const tokenIds = await getTokenIds(networkId);
-  const contract = Kudzu.networks[networkId]?.address || null;
-  return {
-    statusCode: 200,
-    headers: {
-      'access-control-allow-origin': '*',
-      'cache-control': 'public, s-maxage=300, stale-while-revalidate=86400',
-    },
-    body: JSON.stringify({ contract, chainId: parseInt(networkId, 10), tokens: tokenIds }),
-  };
+// Several per chain because these are shared public endpoints and any one of
+// them will rate-limit. All of the below were checked to serve a 2,000-call
+// aggregate3 against this contract.
+const RPCS = {
+  1: [
+    'https://gateway.tenderly.co/public/mainnet',
+    'https://mainnet.gateway.tenderly.co',
+    'https://eth.drpc.org',
+    'https://ethereum-rpc.publicnode.com'
+  ],
+  8453: [
+    'https://mainnet.base.org',
+    'https://base-rpc.publicnode.com',
+    'https://base.gateway.tenderly.co',
+    'https://base.drpc.org'
+  ]
 };
 
-function makeIndexSupplyUrl(query, eventSignature, chainId) {
-  const escapedQuery = encodeURIComponent(query);
-  const escapedSignature = encodeURIComponent(eventSignature);
-  return `${INDEX_SUPPLY_BASE_URL}?api-key=${INDEX_SUPPLY_API_KEY}&query=${escapedQuery}&signatures=${escapedSignature}`;
+// Big enough that Base fits in seven batches, small enough that every endpoint
+// tested returns it well inside a request timeout (~3s at this size).
+const BATCH = 4000;
+
+// How many batches are in flight at once.
+const CONCURRENCY = 4;
+
+const SEL = {
+  totalSupply: '0x18160ddd',
+  tokenByIndex: '0x4f6ccce7',
+  ownerOf: '0x6352211e'
+};
+
+const AGGREGATE3 = {
+  name: 'aggregate3',
+  type: 'function',
+  inputs: [{
+    name: 'calls',
+    type: 'tuple[]',
+    components: [
+      { name: 'target', type: 'address' },
+      { name: 'allowFailure', type: 'bool' },
+      { name: 'callData', type: 'bytes' }
+    ]
+  }]
+};
+
+const RESULT_ARRAY = {
+  type: 'tuple[]',
+  components: [
+    { name: 'success', type: 'bool' },
+    { name: 'returnData', type: 'bytes' }
+  ]
+};
+
+const uint256 = (n) => BigInt(n).toString(16).padStart(64, '0');
+
+/** eth_call against the first endpoint that answers. */
+async function ethCall(chainId, to, data) {
+  const urls = RPCS[chainId];
+  if (!urls) throw new Error(`no RPC configured for chain ${chainId}`);
+  let last;
+  for (let attempt = 0; attempt < urls.length * 2; attempt++) {
+    const url = urls[attempt % urls.length];
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'eth_call',
+          params: [{ to, data }, 'latest']
+        })
+      });
+      const body = await res.json();
+      if (body.error) throw new Error(body.error.message || 'rpc error');
+      if (!body.result || body.result === '0x') throw new Error('empty result');
+      return body.result;
+    } catch (e) {
+      last = e;
+      // A rate limit is the expected failure on a shared endpoint, so move on
+      // and come back rather than giving up on the first refusal.
+      await new Promise((r) => setTimeout(r, 200 * Math.pow(2, Math.floor(attempt / urls.length))));
+    }
+  }
+  throw last || new Error('no endpoint answered');
 }
 
-async function getTokenIds(networkId) {
-  const contractAddress = Kudzu.networks[networkId].address;
-  const chainId = networkId;
-
-  if (!contractAddress) {
-    throw new Error(`No contract address found for network ${networkId}`);
+/**
+ * One selector applied across many arguments, in as few round trips as possible.
+ *
+ * allowFailure is true so that a single unreadable token -- burned, or otherwise
+ * reverting -- yields a hole rather than discarding the whole batch.
+ */
+async function multicall(chainId, target, selector, args) {
+  const batches = [];
+  for (let start = 0; start < args.length; start += BATCH) {
+    batches.push(args.slice(start, start + BATCH));
   }
 
-  // SQL query to get all Infect events for the contract
-  const query = `
-    SELECT "to", tokenId
-    FROM infect 
-    WHERE chain = ${chainId} 
-    AND address = '${contractAddress.toLowerCase()}'
-    ORDER BY block_num ASC, log_idx ASC
-  `;
+  const runBatch = async (slice) => {
+    const data = abi.encodeFunctionCall(AGGREGATE3, [
+      slice.map((a) => [target, true, selector + uint256(a)])
+    ]);
+    const raw = await ethCall(chainId, MULTICALL3, data);
+    // decodeParameters returns an array-like keyed object, not a real array
+    const rows = abi.decodeParameters([RESULT_ARRAY], raw)[0];
+    const part = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      part.push(row.success && row.returnData !== '0x' ? row.returnData : null);
+    }
+    return part;
+  };
 
-  const eventSignature =
-    'event Infect(address indexed from, address indexed to, uint256 indexed tokenId)';
-  const url = makeIndexSupplyUrl(query, eventSignature);
+  // Batches are independent, so run several at once -- Base is seven of them and
+  // sequentially that was 30s of mostly waiting. Not unbounded, though: these are
+  // shared endpoints and the point of the pool is to not exhaust them.
+  const results = new Array(batches.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < batches.length) {
+      const i = next++;
+      results[i] = await runBatch(batches[i]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, batches.length) }, worker)
+  );
+  return results.flat();
+}
 
-  console.log(`Fetching Infect events from Index Supply for chain ${chainId}...`);
+exports.handler = async function (event) {
+  const networkId = (event.queryStringParameters || {}).network ?? '1';
+  const chainId = parseInt(networkId, 10);
+  const contract = (Kudzu.networks[networkId] || {}).address || null;
+
+  if (!contract) {
+    return {
+      statusCode: 404,
+      headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify({ error: `no Kudzu deployment for network ${networkId}` })
+    };
+  }
 
   try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`Index Supply API error: ${response.status} ${response.statusText}`);
-    }
+    const totalHex = await ethCall(chainId, contract, SEL.totalSupply);
+    const total = Number(BigInt(totalHex));
 
-    const data = await response.json();
-    console.log(`Found ${data[0]?.rows?.length || 0} Infect events`);
+    const indexes = Array.from({ length: total }, (_, i) => i);
+    const idHexes = await multicall(chainId, contract, SEL.tokenByIndex, indexes);
+    const tokenIds = idHexes.filter(Boolean).map((h) => BigInt(h).toString());
 
-    if (!data[0] || !data[0].rows) {
-      return [];
-    }
+    const ownerHexes = await multicall(chainId, contract, SEL.ownerOf, tokenIds);
+    const tokens = tokenIds.map((tokenId, i) => ({
+      tokenId,
+      // 32-byte word, address in the low 20 bytes
+      owner: ownerHexes[i] ? '0x' + ownerHexes[i].slice(-40) : null
+    }));
 
-    let events = data[0].rows.map((row) => {
-      const [to, tokenId] = row;
-      return {
-        returnValues: {
-          to,
-          tokenId: tokenId.toString(),
-        },
-      };
-    });
-
-    // Apply the same filtering logic as before
-    // if (networkId == '8453') {
-    //   events = events.filter((event) => {
-    //     const { from, to, tokenId } = event.returnValues;
-    //     return from != '0x0000000000000000000000000000000000000000';
-    //   });
-    // }
-
-    const tokenIds = events.map((event) => {
-      return {
-        tokenId: event.returnValues.tokenId,
-        owner: event.returnValues.to,
-      };
-    });
-
-    return tokenIds;
-  } catch (error) {
-    console.error('Error fetching from Index Supply:', error);
-    throw error;
+    return {
+      statusCode: 200,
+      headers: {
+        'access-control-allow-origin': '*',
+        'cache-control': 'public, s-maxage=300, stale-while-revalidate=86400'
+      },
+      body: JSON.stringify({ contract, chainId, tokens })
+    };
+  } catch (e) {
+    console.error('tokenIds', e);
+    return {
+      statusCode: 502,
+      headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify({ error: String((e && e.message) || e) })
+    };
   }
-}
+};
