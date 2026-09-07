@@ -55,6 +55,19 @@ const RPCS = {
 const BATCH = 4000;
 const CONCURRENCY = 4;
 
+// Above this many tokens, owners are left for the client to resolve.
+//
+// SquishyThumbToken.vue already fetches an owner when a tile scrolls into view
+// -- `observer(v-if="!owner", @visible="fetchOwner")` -- so supplying all of
+// them up front is work the page does not need: a visitor sees a couple of
+// dozen tiles, not 27,912. Doing it anyway doubles both the calls and the
+// decoding, and on Base that was enough to exceed the Workers CPU limit and
+// return 1102 to everyone.
+//
+// Mainnet has 2,184 tokens and stays under the threshold, so its response is
+// unchanged, owners included, byte for byte what it has always been.
+const OWNERS_UP_TO = 5000;
+
 const SEL = {
   totalSupply: '0x18160ddd',
   tokenByIndex: '0x4f6ccce7',
@@ -182,15 +195,17 @@ exports.handler = async function (event) {
       throw new Error(`enumerated ${tokenIds.length} of ${total} tokens`);
     }
 
-    const ownerRows = await multicall(chainId, contract, SEL.ownerOf, tokenIds);
+    const ownerRows = tokenIds.length <= OWNERS_UP_TO
+      ? await multicall(chainId, contract, SEL.ownerOf, tokenIds)
+      : null;
+
     const tokens = new Array(tokenIds.length);
     for (let i = 0; i < tokenIds.length; i++) {
-      const r = ownerRows[i];
-      tokens[i] = {
-        tokenId: tokenIds[i],
+      const r = ownerRows && ownerRows[i];
+      tokens[i] = ownerRows
         // 32-byte word, address in the low 20 bytes
-        owner: r && r.success && r.returnData ? '0x' + r.returnData.slice(24) : null
-      };
+        ? { tokenId: tokenIds[i], owner: r && r.success && r.returnData ? '0x' + r.returnData.slice(24) : null }
+        : { tokenId: tokenIds[i] };
     }
 
     return {
